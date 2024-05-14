@@ -1,6 +1,7 @@
 import { Minimatch } from "minimatch";
 import * as vscode from "vscode";
-import { getCommunicationDirPath } from "./paths";
+import { getCommunicationDirPath } from "./getCommunicationDirPath";
+import { getLegacyCommunicationDirPath } from "./getLegacyCommunicationDirPath";
 import { any } from "./regex";
 import { RpcServer } from "./rpcServer";
 import type { RequestCallbackOptions } from "./rpcServer/types";
@@ -10,17 +11,11 @@ export default class CommandRunner {
     private allowRegex!: RegExp;
     private denyRegex!: RegExp | null;
     private backgroundWindowProtection!: boolean;
-    private rpc: RpcServer<Payload>;
 
-    constructor() {
+    constructor(private rpc: RpcServer<Payload>) {
         this.reloadConfiguration = this.reloadConfiguration.bind(this);
         this.runCommand = this.runCommand.bind(this);
         this.executeRequest = this.executeRequest.bind(this);
-
-        this.rpc = new RpcServer<Payload>(
-            getCommunicationDirPath(),
-            this.executeRequest
-        );
 
         this.reloadConfiguration();
         vscode.workspace.onDidChangeConfiguration(this.reloadConfiguration);
@@ -57,7 +52,7 @@ export default class CommandRunner {
      * types.
      */
     runCommand(): Promise<void> {
-        return this.rpc.executeRequest();
+        return this.rpc.executeRequest(this.executeRequest);
     }
 
     private async executeRequest(

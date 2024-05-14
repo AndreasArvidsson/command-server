@@ -1,31 +1,53 @@
-import * as fs from "fs/promises";
 import * as path from "path";
-import { readRequest, writeResponse } from "./io";
+import { initializeCommunicationDir } from "./initializeCommunicationDir";
+import { fileExists, openFile, readRequest, writeResponse } from "./io";
 import type { RequestCallbackOptions, RequestLatest } from "./types";
 import { upgradeRequest } from "./upgradeRequest";
+import { InboundSignal } from "./InboundSignal";
+
+interface CommunicationDir {
+    path: string;
+    requestJson: string;
+    responseJson: string;
+    signalsDir: string;
+}
 
 export class RpcServer<T> {
-    private requestPath: string;
-    private responsePath: string;
-    private callback: (payload: T, options: RequestCallbackOptions) => unknown;
+    private communicationDirs: CommunicationDir[];
+    private activeCommunicationDir?: CommunicationDir;
 
-    constructor(
-        private dirPath: string,
-        callback: (payload: T, options: RequestCallbackOptions) => unknown
-    ) {
-        this.requestPath = path.join(this.dirPath, "request.json");
-        this.responsePath = path.join(this.dirPath, "response.json");
-        this.callback = callback;
+    constructor(communicationDirPaths: string[]) {
+        this.communicationDirs = communicationDirPaths.map(
+            (dirPath): CommunicationDir => ({
+                path: dirPath,
+                requestJson: path.join(dirPath, "request.json"),
+                responseJson: path.join(dirPath, "response.json"),
+                signalsDir: path.join(dirPath, "signals"),
+            })
+        );
     }
 
-    async executeRequest() {
-        const responseFile = await fs.open(this.requestPath, "wx");
+    initialize() {
+        for (const dir of this.communicationDirs) {
+            initializeCommunicationDir(dir.path);
+        }
+    }
+
+    async executeRequest(
+        callback: (payload: T, options: RequestCallbackOptions) => unknown
+    ) {
+        this.updateActiveCommunicationDir();
+
+        const communicationDir = this.getActiveCommunicationDir();
+
+        const responseFile = await openFile(communicationDir.responseJson);
 
         let request: RequestLatest;
 
         try {
-            const requestInput = await readRequest(this.requestPath);
-            request = upgradeRequest(requestInput);
+            request = await this.readCanonicalRequests(
+                communicationDir.requestJson
+            );
         } catch (err) {
             await responseFile.close();
             throw err;
@@ -42,7 +64,7 @@ export class RpcServer<T> {
         try {
             // Wrap in promise resolve to handle both sync and async functions
             const commandPromise = Promise.resolve(
-                this.callback(payload as T, options)
+                callback(payload as T, options)
             );
 
             let commandReturnValue = null;
@@ -68,5 +90,34 @@ export class RpcServer<T> {
         }
 
         await responseFile.close();
+    }
+
+    getInboundSignal(name: string): InboundSignal {
+        const communicationDir = this.getActiveCommunicationDir();
+        const signalFilepath = path.join(communicationDir.signalsDir, name);
+        return new InboundSignal(signalFilepath);
+    }
+
+    private async readCanonicalRequests(
+        requestJson: string
+    ): Promise<RequestLatest> {
+        const requestInput = await readRequest(requestJson);
+        return upgradeRequest(requestInput);
+    }
+
+    private getActiveCommunicationDir(): CommunicationDir {
+        if (this.activeCommunicationDir != null) {
+            return this.activeCommunicationDir;
+        }
+        throw Error("No active communication directory found");
+    }
+
+    private updateActiveCommunicationDir() {
+        for (const dir of this.communicationDirs) {
+            if (fileExists(dir.requestJson)) {
+                this.activeCommunicationDir = dir;
+            }
+        }
+        this.activeCommunicationDir = undefined;
     }
 }
